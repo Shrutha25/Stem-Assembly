@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Claude Code session-local state -- not project source
+.claude/
+
+# captured training data / trained weights — large, machine-specific
+data/sessions/
+data/dataset/
+data/dataset_pose/
+models/*
+!models/.gitkeep
+!models/runs/.gitkeep
+
+*.pt
+*.onnx
+
+# zip bundles / manual snapshot copies made for offline training runs
+*.zip
+step 1, 2 removed/

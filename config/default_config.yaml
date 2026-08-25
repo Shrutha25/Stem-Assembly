@@ -1,0 +1,198 @@
+# Assembly Trainer — default configuration.
+# Single source of truth for every tunable in the pipeline (see build plan §8).
+# Per-step fields override the `app`/`escalation` defaults below when present;
+# omit a per-step field to fall back to the matching default.
+
+model_path: models/best.onnx  # updated by training/export.py after a real train run
+
+# Second, optional model: a corner-keypoint pose detector for block_7x7,
+# used only by steps 1/2's hole-position check (see hole_template below and
+# assembly_trainer/hole_position.py). Missing/commented out = hole-position
+# checking is silently disabled and steps 1/2 behave exactly as before
+# (count-only gating) -- uncomment once training/train_pose.py has produced
+# a real model and training/export.py --config-field pose_model_path has run.
+pose_model_path: models/block-pose.onnx  # filename MUST contain "-pose" (hyphen) -- see hole_position.py note
+
+classes:
+  - short_peg
+  - block_7x7
+  - block_7x14
+  - peecee
+  # motor_lead_loose REMOVED: 0.21 mAP vs motor_lead_connected's 0.983 --
+  # a loose wire's tip can be anywhere (dangling, on the table, any angle),
+  # too high-variance to be a learnable class, and it wasn't required by any
+  # step's `requires` anyway (only ever fed the loose-vs-connected
+  # comparison in gating.py). Removing it also fixes a real gating risk: the
+  # old comparison picked whichever of the two had higher confidence that
+  # frame, so a noisy motor_lead_loose false-positive could occasionally
+  # outscore and override a genuine motor_lead_connected reading. Step 5 now
+  # just checks motor_lead_connected's own presence (evaluate_class_count),
+  # like every other class in this system.
+  - motor_lead_connected    # motor leads wired into the PeeCee
+  # "Wrong orientation" indicators, named by convention (step<N>_wrong_orientation)
+  # rather than a separate config mapping — the diagnostic logic just checks
+  # whether this name exists in the class list. step1/step2_wrong_orientation
+  # were REMOVED (steps 1/2 no longer have one): what "wrong orientation"
+  # actually meant for those steps turned out to be POSITION (which hole),
+  # not a visual attribute -- a peg's crop doesn't change based on which
+  # hole it's in, so no amount of labeling data could make this a learnable
+  # visual class. That's now handled correctly by hole_template/target_hole
+  # (see hole_position.py), which reasons about position geometrically
+  # instead of visually. step3/step4_wrong_orientation stay -- their "wrong
+  # orientation" is a genuine visual attribute of the part being placed
+  # (7x14 block / peecee), not a position-in-disguise problem.
+  - step3_wrong_orientation
+  - step4_wrong_orientation
+  # A distractor part that looks similar to short_peg (same material/color,
+  # just longer) but was never a distinct trained class -- the live model
+  # guessed unreliably at it (weakly firing short_peg/step1_wrong_orientation
+  # instead of confidently rejecting it), because it had no deliberate
+  # negative example teaching it "this is a different, known thing." Not
+  # required by any step (long pegs aren't part of the build) -- purely a
+  # hard-negative class so the model learns to reject it outright instead of
+  # guessing among the peg-family classes.
+  - long_peg
+
+app:
+  confidence_threshold: 0.60
+  inference_interval_ms: 200
+  # Widened from 10/0.7 after real-hardware testing: a trainee's hands
+  # moving parts around in frame produce brief bursts of noisy/overlapping
+  # class detections, and a short window could satisfy a step's stability
+  # check on that noise alone (observed advancing through several steps in
+  # under a minute with nothing actually assembled). 15 frames @ 0.85 needs
+  # ~2.5s of consistently correct reads at inference_interval_ms=200, which
+  # a genuine placement holds through but a motion-blur/occlusion burst won't.
+  stability_window_frames: 15
+  stability_pass_ratio: 0.85
+  # §7: highest resolution the model/hardware can sustain at the target
+  # inference rate — start high (960/1280), not YOLO's 640 default. Shared
+  # by training/train.py and the live detector so they can't drift apart.
+  imgsz: 960
+  # Margin (as a ratio of the assembly bbox's own size) added around the
+  # growing-assembly bounding box to form the "placement ROI" that a step's
+  # new parts must land inside of (build plan §4 closing note).
+  assembly_roi_margin_ratio: 0.35
+
+camera:
+  device_index: 0
+  width: 1920
+  height: 1080
+  auto_exposure: true
+  # Settle time for auto-exposure/white-balance after opening — grabbing a
+  # frame immediately after open() can catch it mid-convergence (dark or
+  # blown out); this webcam needed ~2-2.5s to settle in practice.
+  warmup_seconds: 2.5
+  # Optional fixed zone (normalized 0-1 coords: x, y, w, h) covering the
+  # fixture/workstation area. Used as the base placement ROI for step 1
+  # (before any assembly bbox exists yet) and as a fallback bound thereafter.
+  workstation_roi: {x: 0.10, y: 0.10, w: 0.8, h: 0.8}
+
+escalation:
+  tier_1_reference_image_after_seconds: 20
+  tier_2_reference_video_after_seconds: 45
+  tier_3_trainer_alert_after_seconds: 90
+  # v1: simple elapsed-time-only timers (per build plan §6). Left as an
+  # explicit hook, not implemented — flip on later if needed.
+  pause_on_partial_progress: false
+
+# Hole-position template for steps 1/2's target_hole check (see
+# assembly_trainer/hole_position.py). Coordinates are normalized 0-1 in
+# CANONICAL block space -- the unit square defined by the block's own 4
+# corners in order top-left=(0,0), top-right=(1,0), bottom-right=(1,1),
+# bottom-left=(0,1) (this is what the pose model and label_tool.py's
+# keypoint mode both target) -- NOT pixel-measured from any one photo,
+# since a rotated/angled photo can't be measured for a "normalized" template
+# without already having the corner mapping this template is meant to
+# provide (circular). Instead this is the block's known real structure: 7
+# holes, evenly spaced with a half-spacing margin at each end, along each of
+# the two long edges (y=0 and y=1). THIS IS A STARTING ESTIMATE — verify it
+# against the physical block (confirm holes really are evenly spaced/margined
+# this way, not e.g. flush with the corners) before relying on it, and correct
+# the x values here if not.
+hole_template:
+  edge_a:  # y=0 edge
+    - {name: edge_a_hole1, x: 0.0714, y: 0.0}
+    - {name: edge_a_hole2, x: 0.2143, y: 0.0}
+    - {name: edge_a_hole3, x: 0.3571, y: 0.0}
+    - {name: edge_a_hole4, x: 0.5000, y: 0.0}
+    - {name: edge_a_hole5, x: 0.6429, y: 0.0}
+    - {name: edge_a_hole6, x: 0.7857, y: 0.0}
+    - {name: edge_a_hole7, x: 0.9286, y: 0.0}
+  edge_b:  # y=1 edge
+    - {name: edge_b_hole1, x: 0.0714, y: 1.0}
+    - {name: edge_b_hole2, x: 0.2143, y: 1.0}
+    - {name: edge_b_hole3, x: 0.3571, y: 1.0}
+    - {name: edge_b_hole4, x: 0.5000, y: 1.0}
+    - {name: edge_b_hole5, x: 0.6429, y: 1.0}
+    - {name: edge_b_hole6, x: 0.7857, y: 1.0}
+    - {name: edge_b_hole7, x: 0.9286, y: 1.0}
+
+# Six parts (short_peg, block_7x7, block_7x14, peecee, and the two motor-lead
+# states), five linear steps — motor attachment is folded into step 3
+# (motors mount onto the 7x14 block itself, right when it's placed) rather
+# than being its own separate gated step. Step 4's PeeCee GPIO-pin connection
+# is a placement check (PeeCee detected in the correct spot) — there's no
+# visual loose/connected distinction to draw for it, unlike the motors.
+#
+# motor_lead_loose is NOT required at steps 3/4 — the trainee can plainly
+# see whether they physically attached the motors, so machine-verifying
+# that adds no value. It stays in the class list purely because step 5's
+# loose-vs-connected check needs it internally: that's the one place a
+# trainee genuinely can't tell by eye, which is exactly where the system
+# should be adding value instead of just re-confirming the obvious.
+# Step 5's motor-wiring is special-cased per build plan §5: a single fixed
+# ROI anchored on the PeeCee, a UI-guided two-part flow (one motor lead at
+# a time), and a reset-before-second-confirmation rule so a still-connected
+# first lead can't be held in frame and double-counted as both.
+steps:
+  - id: 1
+    name: "Attach first short peg to the opposite edge of the 7x7 block"
+    requires: {block_7x7: 1, short_peg: 1}
+    # Set to a hole name from hole_template above (e.g. edge_a_hole3) once
+    # pose_model_path is trained/uncommented, and update `name` above to
+    # name the actual required hole instead of "one edge". Left unset for
+    # now = no hole-position check, existing count-only gating (unaffected).
+    # target_hole: edge_a_hole?
+    reference_image: assets/reference/step_01_correct.jpg
+    reference_video: assets/reference/step_01_correct.mp4
+
+  - id: 2
+    name: "Attach second short peg to the other end of the edge of the 7x7 block opposite of wheel"
+    requires: {block_7x7: 1, short_peg: 2}
+    # target_hole: edge_b_hole?
+    reference_image: assets/reference/step_02_correct.jpg
+    reference_video: assets/reference/step_02_correct.mp4
+
+  - id: 3
+    name: "Place the 7x14 block on top of the 7x7 block"
+    requires: {block_7x7: 1, short_peg: 2, block_7x14: 1}
+    reference_image: assets/reference/step_03_correct.jpg
+    reference_video: assets/reference/step_03_correct.mp4
+
+  - id: 4
+    name: "Seat the PeeCee between pegs and the 7x14 block edge"
+    requires: {block_7x7: 1, short_peg: 2, block_7x14: 1, peecee: 1}
+    reference_image: assets/reference/step_04_correct.jpg
+    reference_video: assets/reference/step_04_correct.mp4
+
+  - id: 5
+    name: "Wire both motor wire into the PeeCee"
+    type: sequential_roi              # special-cased, see build plan §5
+    requires: {block_7x7: 1, short_peg: 2, block_7x14: 1, peecee: 1, motor_lead_connected: 2}
+    roi: peecee_connector_zone
+    confidence_threshold: 0.75   # stricter — highest-risk classification (loose vs. connected)
+    stability_window_frames: 15  # longer — avoid premature confirm
+    escalation:
+      tier_1_reference_image_after_seconds: 30
+      tier_2_reference_video_after_seconds: 60
+      tier_3_trainer_alert_after_seconds: 120
+    sub_steps:
+      - key: lead_1
+        ui_prompt: "Wire first motor lead into the PeeCee"
+        require_roi_empty_first: false
+      - key: lead_2
+        ui_prompt: "Wire second motor lead into the PeeCee"
+        require_roi_empty_first: true   # anti-gaming: ROI must go empty/reset before this sub-step starts listening
+    reference_image: assets/reference/step_05_correct.jpg
+    reference_video: assets/reference/step_05_correct.mp4

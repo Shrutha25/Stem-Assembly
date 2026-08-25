@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Assembly Trainer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Assembly Trainer</h1>
+    <div class="header-actions">
+      <button id="reset-btn" class="btn btn-outline">Start again</button>
+      <a href="/trainer">Trainer dashboard &rarr;</a>
+    </div>
+  </header>
+
+  <div class="mock-banner" id="mock-banner">DEMO MODE &mdash; no trained model is loaded. This is a scripted walkthrough, not real detection.</div>
+
+  <main>
+    <section class="panel">
+      <img id="video-feed" src="/video_feed" alt="live camera feed" />
+    </section>
+
+    <section class="panel" id="side-panel">
+      <div class="step-header">
+        <div>
+          <div class="label" id="step-label">Step &mdash; of &mdash;</div>
+          <h2 id="step-name">Connecting&hellip;</h2>
+        </div>
+      </div>
+
+      <ul class="checklist" id="checklist"></ul>
+
+      <div class="sub-step-progress" id="sub-step-progress" style="display:none;"></div>
+
+      <div class="tiers">
+        <div class="tier-card image" id="tier-image">
+          <h3>Need a hint? Here's how it should look</h3>
+          <img id="tier-image-img" alt="reference" />
+        </div>
+        <div class="tier-card video" id="tier-video">
+          <h3>Still stuck &mdash; watch the step</h3>
+          <video id="tier-video-vid" controls muted loop></video>
+        </div>
+        <div class="tier-card trainer" id="tier-trainer">
+          <h3>A trainer has been notified and is on the way</h3>
+        </div>
+      </div>
+
+      <div class="status-bar" id="status-bar">connecting&hellip;</div>
+    </section>
+  </main>
+
+  <div class="complete-banner" id="complete-banner">
+    <div>Assembly complete &mdash; nice work!</div>
+    <button id="reset-btn-complete" class="btn btn-primary">Start again</button>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

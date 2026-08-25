@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Assembly Trainer — Trainer Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    main.trainer { grid-template-columns: 1fr; max-width: 720px; margin: 0 auto; }
+    #flags { list-style: none; margin: 0; padding: 0; }
+    #flags li {
+      display: flex; justify-content: space-between; gap: 12px;
+      padding: 12px 14px; border-radius: 8px; margin-bottom: 8px;
+      background: rgba(224, 90, 79, 0.08); border: 1px solid var(--bad);
+    }
+    #flags .empty { color: var(--muted); font-style: italic; border: none; background: none; }
+    #current { margin-bottom: 20px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Trainer Dashboard</h1>
+    <a href="/">&larr; Trainee view</a>
+  </header>
+
+  <div class="mock-banner" id="mock-banner">DEMO MODE &mdash; no trained model is loaded. This is a scripted walkthrough, not real detection.</div>
+
+  <main class="trainer">
+    <section class="panel" id="current">
+      <div class="label" style="color:var(--muted); font-size:0.85rem;">Station status</div>
+      <h2 id="current-step">&mdash;</h2>
+      <div id="current-tier" style="color:var(--muted); font-size:0.85rem;"></div>
+      <button id="reset-btn" class="btn btn-danger" style="margin-top:12px;">Reset station</button>
+    </section>
+
+    <section class="panel">
+      <h2 style="margin-top:0;">Flagged steps (trainee stuck &gt; tier 3)</h2>
+      <ul id="flags"><li class="empty">no flags yet</li></ul>
+    </section>
+  </main>
+
+  <script src="/static/trainer.js"></script>
+</body>
+</html>

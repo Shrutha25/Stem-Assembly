@@ -1,0 +1,13 @@
+# Core pipeline (config, stability, rule engine, escalation) — no CV/ML deps.
+pyyaml>=6.0
+
+# Camera + web UI.
+opencv-python>=4.8
+numpy>=1.24
+fastapi>=0.100
+uvicorn[standard]>=0.23
+
+# Real detector (YOLOv8 + ByteTrack). Optional for development — the mock
+# detector (see assembly_trainer/mock_detector.py) needs none of this.
+ultralytics>=8.1
+onnx>=1.15
