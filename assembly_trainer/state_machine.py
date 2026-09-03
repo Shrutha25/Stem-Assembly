@@ -16,17 +16,31 @@ from .gating import (
     diagnose_class,
     evaluate_class_count,
     evaluate_hole_position,
+    evaluate_attached,
+    evaluate_seated,
     step_orientation_variant,
 )
 from .hole_position import Point, compute_homography
 from .roi import Bbox, center_inside, connector_zone_roi, normalized_roi_to_pixels, placement_roi, union_bbox
 from .stability import StabilityWindow
 
-# Only this class gets hole-position checking (steps 1/2 both place a
-# short_peg -- see hole_position.py / config's target_hole). Hardcoded
-# rather than a new per-class config field since no other class in this
-# system has hole-level semantics.
-_HOLE_POSITION_CLASS = "short_peg"
+# Only this class gets hole-position checking (steps 1/2 both place a peg --
+# see hole_position.py / config's target_hole). Hardcoded rather than a new
+# per-class config field since no other class in this system has hole-level
+# semantics.
+#
+# NOTE for whoever enables hole-position checking (it is inert today -- no
+# pose_model_path exists): `peg` is now the MERGED short_peg/long_peg class,
+# so peg detections include the 2 long pegs permanently fixtured on the 7x7
+# block, which are never in the trainee's target hole. A target_hole check
+# against this class must therefore ignore pegs sitting in the two fixture
+# positions rather than treating them as a wrong-hole placement.
+_HOLE_POSITION_CLASS = "peg"
+
+# Only this class gets the seated check on steps with require_seated set
+# (step 4). Hardcoded for the same reason as _HOLE_POSITION_CLASS: no
+# other class in this system has seated-on-the-assembly semantics.
+_SEATED_CLASS = "peecee"
 
 
 @dataclass
@@ -73,6 +87,30 @@ class StepStateMachine:
         self._sub_step_index = 0
         self._sub_step_awaiting_reset = False
         self._last_peecee_bbox = None
+
+    def go_to_previous_step(self) -> bool:
+        """Step back one, for a trainee who advanced by mistake or wants to
+        redo the last action. Returns False (and changes nothing) when already
+        on the first step.
+
+        Clears the stability windows so the earlier step is judged on fresh
+        frames rather than inheriting reads taken while the later step was
+        active. Also drops the grown assembly bbox: it only ever expands as
+        steps complete, so after stepping back it describes an assembly that
+        no longer exists -- dropping it makes the placement ROI fall back to
+        the configured workstation zone and re-grow naturally.
+        """
+        previous_id = self.cfg.previous_step_id(self.current_step_id)
+        if previous_id is None:
+            return False
+        self.current_step_id = previous_id
+        self.completed = False
+        self._windows.clear()
+        self._assembly_bbox = None
+        self._sub_step_index = 0
+        self._sub_step_awaiting_reset = False
+        self._last_peecee_bbox = None
+        return True
 
     def _window(self, key: str, window_frames: int) -> StabilityWindow:
         win = self._windows.get(key)
@@ -147,6 +185,28 @@ class StepStateMachine:
                 hole_win.push(hole_reading.outcome)
                 ok = ok and hole_win.is_stable_correct(pass_ratio)
 
+            if step.require_seated and class_name == _SEATED_CLASS:
+                # Same shape as the hole check above: a part merely PRESENT in
+                # the ROI must not complete the step -- it has to be seated on
+                # the blocks. ANDed with its own stability window so a single
+                # frame where the blocks aren't visible (evaluate_seated ->
+                # UNCERTAIN) can't flip it either way.
+                seated_reading = evaluate_seated(detections, class_name, roi, threshold)
+                seated_win = self._window(f"{step.id}:{class_name}:seated", window_frames)
+                seated_win.push(seated_reading.outcome)
+                ok = ok and seated_win.is_stable_correct(pass_ratio)
+
+            attach_to = step.require_attached_to.get(class_name)
+            if attach_to:
+                # Same shape again: both parts merely being in the ROI must not
+                # complete the step -- they have to be put together. Its own
+                # stability window so a frame where either part isn't visible
+                # (evaluate_attached -> UNCERTAIN) can't flip it either way.
+                attached_reading = evaluate_attached(detections, class_name, attach_to, roi, threshold)
+                attached_win = self._window(f"{step.id}:{class_name}:attached", window_frames)
+                attached_win.push(attached_reading.outcome)
+                ok = ok and attached_win.is_stable_correct(pass_ratio)
+
             class_status[class_name] = ok
             # Diagnosis is purely a UI hint, computed fresh each frame (not
             # stability-windowed like advancement) — cheap, and reacting
@@ -155,6 +215,7 @@ class StepStateMachine:
             class_diagnosis[class_name] = diagnose_class(
                 detections, class_name, roi, threshold, required_count, expected_classes, orientation_variant,
                 target_hole, self.cfg.hole_template, homography,
+                require_seated=step.require_seated and class_name == _SEATED_CLASS,
             )
 
         satisfied = sum(1 for ok in class_status.values() if ok)

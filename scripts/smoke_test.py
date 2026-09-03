@@ -34,6 +34,7 @@ import numpy as np
 from assembly_trainer.config import Config, load_config
 from assembly_trainer.detector import Detection
 from assembly_trainer.escalation import Tier
+from assembly_trainer.gating import step_orientation_variant
 from assembly_trainer.mock_detector import MockDetector, Script, build_full_walkthrough_script
 from assembly_trainer.pipeline import Pipeline, TrainerFlag
 from assembly_trainer.state_machine import StepStateMachine
@@ -117,51 +118,8 @@ def test_full_walkthrough() -> None:
     check(len(pipeline.flags) == 0, "no trainer-alert flags fired during a smoothly-progressing run")
 
 
-def test_wiring_anti_gaming() -> None:
-    print("\n[2] motor-wiring step anti-gaming reset rule")
-    base_cfg = load_config("config/default_config.yaml")
-    wiring_step_id = next(s.id for s in base_cfg.steps if s.type == "sequential_roi")
-    cfg = single_step_config(base_cfg, wiring_step_id)
-    clock = FakeClock()
-    frame_w, frame_h = cfg.camera.width, cfg.camera.height
-    window = cfg.resolve(cfg.steps[0], "stability_window_frames")
-
-    peecee = Detection("peecee", 0.95, (800, 400, 1100, 700))
-    px1, py1, px2, py2 = peecee.bbox
-    connected = Detection("motor_lead_connected", 0.95, (px1, py1, px2, py2))
-
-    script_no_reset: Script = [(1e9, [peecee, connected])]  # never changes
-    detector = MockDetector(script_no_reset, clock=clock.now)
-    pipeline = Pipeline(cfg, detector, make_frame_source(frame_w, frame_h), clock=clock.now)
-
-    result = tick_n(pipeline, clock, cfg, window + 2)
-    check(result.frame_result.sub_step_progress == (1, 2), "lead_1 confirms from a stable 'connected' read")
-
-    # Without ever showing a reset, lead_2 must NOT confirm even though the
-    # zone still reads "connected" — this is exactly the gaming scenario
-    # the require_roi_empty_first rule exists to block.
-    result = tick_n(pipeline, clock, cfg, window * 4)
-    check(
-        result.frame_result.sub_step_progress == (1, 2) and not pipeline.state_machine.completed,
-        "lead_2 stays blocked indefinitely without a reset frame (anti-gaming holds)",
-    )
-
-    # Now actually show the reset (empty zone -- motor_lead_loose was
-    # removed, "not confidently connected" is all reset needs), then
-    # connected again -> should complete.
-    detector._script = [(1e9, [peecee])]
-    detector._start = clock.now()
-    result = tick_n(pipeline, clock, cfg, window + 2)
-    check(not pipeline.state_machine._sub_step_awaiting_reset, "reset frame clears the awaiting-reset flag")
-
-    detector._script = [(1e9, [peecee, connected])]
-    detector._start = clock.now()
-    result = tick_n(pipeline, clock, cfg, window + 2)
-    check(pipeline.state_machine.completed, "lead_2 confirms after a genuine reset, wiring step completes")
-
-
 def test_escalation_tiers() -> None:
-    print("\n[3] escalation tier progression, stacking, and reset-on-advance")
+    print("\n[2] escalation tier progression, stacking, and reset-on-advance")
     base_cfg = load_config("config/default_config.yaml")
     cfg = single_step_config(base_cfg, 1)  # step 1's actual requires, whatever the config currently says
     step1_requires = cfg.steps[0].requires
@@ -211,61 +169,60 @@ def test_escalation_tiers() -> None:
 
 
 def test_diagnosis() -> None:
-    print("\n[4] wrong-part / wrong-orientation diagnosis")
+    print("\n[3] wrong-part / wrong-orientation diagnosis")
     base_cfg = load_config("config/default_config.yaml")
-    cfg = single_step_config(base_cfg, 1)  # {block_7x7: 1, short_peg: 1}
+    cfg = single_step_config(base_cfg, 1)  # {block_7x7: 1, peg: 3}
     frame_w, frame_h = cfg.camera.width, cfg.camera.height
     block = Detection("block_7x7", 0.9, (700, 400, 1000, 700))
+    # Steps 1/2 gate on peg COUNT: 2 long pegs are permanently fixtured on
+    # the 7x7 block, so step 1 needs 3 and step 2 needs 4.
+    fixtures = [
+        Detection("peg", 0.9, (720, 420, 750, 470)),
+        Detection("peg", 0.9, (960, 420, 990, 470)),
+    ]
 
     result = StepStateMachine(cfg).process_frame([], frame_w, frame_h)
     check(
-        result.class_diagnosis["short_peg"].reason.value == "not_present",
-        "empty frame -> short_peg diagnosed as not_present",
+        result.class_diagnosis["peg"].reason.value == "not_present",
+        "empty frame -> peg diagnosed as not_present",
     )
 
-    # step1/step2_wrong_orientation were removed (see config comment --
-    # "wrong orientation" for those steps turned out to mean position, now
-    # handled by hole_template/target_hole instead). step3/step4 keep this
-    # mechanism (a genuine visual attribute for those parts), so test it
-    # against step 3 directly -- NOT single_step_config, which renumbers to
-    # id=1 and would look for a "step1_wrong_orientation" class that no
-    # longer exists; step 3 must keep its real id so "step3_wrong_orientation"
-    # resolves.
+    result = StepStateMachine(cfg).process_frame([block] + fixtures, frame_w, frame_h)
+    check(
+        not result.class_status["peg"],
+        "bare block (2 fixture pegs, none placed) does NOT satisfy step 1's count of 3",
+    )
+
+    # ALL step<N>_wrong_orientation classes have been removed from the config
+    # class list AND from the training labels, so no step resolves an
+    # orientation variant and the WRONG_ORIENTATION diagnosis is unreachable.
+    # steps 1/2's version was really about position (now
+    # hole_template/target_hole); steps 3/4's was dropped afterwards.
     step3_cfg = copy.deepcopy(base_cfg)
     step3_cfg.steps = [copy.deepcopy(base_cfg.get_step(3))]
-    wrong_orientation_peg = Detection("step3_wrong_orientation", 0.9, (750, 450, 800, 500))
-    result = StepStateMachine(step3_cfg).process_frame([block, wrong_orientation_peg], frame_w, frame_h)
     check(
-        result.class_diagnosis["short_peg"].reason.value == "wrong_orientation",
-        "step3_wrong_orientation detected in the peg's spot -> diagnosed as wrong_orientation",
+        step_orientation_variant(3, set(step3_cfg.classes)) is None,
+        "step3_wrong_orientation no longer in the class list -> no orientation variant resolves",
     )
 
     unexpected_peecee = Detection("peecee", 0.9, (750, 450, 800, 500))
     result = StepStateMachine(cfg).process_frame([block, unexpected_peecee], frame_w, frame_h)
-    diag = result.class_diagnosis["short_peg"]
+    diag = result.class_diagnosis["peg"]
     check(
         diag.reason.value == "wrong_part" and diag.detail == "peecee",
         f"unrelated class detected in the peg's spot -> diagnosed as wrong_part (detail={diag.detail!r})",
     )
 
-    long_peg = Detection("long_peg", 0.9, (750, 450, 800, 500))
-    result = StepStateMachine(cfg).process_frame([block, long_peg], frame_w, frame_h)
+    placed = Detection("peg", 0.9, (750, 450, 800, 500))
+    result = StepStateMachine(cfg).process_frame([block] + fixtures + [placed], frame_w, frame_h)
     check(
-        result.class_diagnosis["short_peg"].reason.value == "not_present",
-        "long_peg detected in the peg's spot -> NOT diagnosed as wrong_part "
-        "(it's always physically present regardless of progress, not a real signal)",
-    )
-
-    correct_peg = Detection("short_peg", 0.9, (750, 450, 800, 500))
-    result = StepStateMachine(cfg).process_frame([block, correct_peg], frame_w, frame_h)
-    check(
-        result.class_diagnosis["short_peg"].reason.value == "satisfied",
-        "correct peg detected -> diagnosed as satisfied",
+        result.class_diagnosis["peg"].reason.value == "satisfied",
+        "2 fixture pegs + 1 placed = 3 -> step 1 satisfied",
     )
 
 
 def test_reset() -> None:
-    print("\n[5] 'Start again' reset (pipeline.reset())")
+    print("\n[4] 'Start again' reset (pipeline.reset())")
     cfg = load_config("config/default_config.yaml")
     clock = FakeClock()
     frame_w, frame_h = cfg.camera.width, cfg.camera.height
@@ -310,7 +267,11 @@ def _hole_position_test_config() -> Config:
     """A single-step config (id renumbered to 1) with target_hole/hole_template
     wired up, isolated from the real dataset/model so this is pure geometry."""
     base_cfg = load_config("config/default_config.yaml")
-    cfg = single_step_config(base_cfg, 1)  # {block_7x7: 1, short_peg: 1}
+    cfg = single_step_config(base_cfg, 1)
+    # Pure geometry: require a SINGLE peg rather than step 1's real count of
+    # 3 (2 block fixtures + 1 placed), so this exercises hole projection
+    # alone and not the fixture-baseline counting.
+    cfg.steps[0].requires = {"block_7x7": 1, "peg": 1}
     cfg.steps[0].target_hole = "a1"
     cfg.hole_template = {
         "edge_a": [
@@ -323,7 +284,7 @@ def _hole_position_test_config() -> Config:
 
 
 def test_hole_position() -> None:
-    print("\n[6] hole-position gating (steps with target_hole set)")
+    print("\n[5] hole-position gating (steps with target_hole set)")
     cfg = _hole_position_test_config()
     frame_w, frame_h = cfg.camera.width, cfg.camera.height
     window = cfg.resolve(cfg.steps[0], "stability_window_frames")
@@ -335,7 +296,7 @@ def test_hole_position() -> None:
     block = Detection("block_7x7", 0.9, (650, 380, 1050, 720))
 
     def peg_at(px: float, py: float) -> Detection:
-        return Detection("short_peg", 0.9, (px - 15, py - 15, px + 15, py + 15))
+        return Detection("peg", 0.9, (px - 15, py - 15, px + 15, py + 15))
 
     # -- correct hole: peg near a1's projected pixel position --
     sm = StepStateMachine(cfg)
@@ -350,13 +311,13 @@ def test_hole_position() -> None:
     for _ in range(window + 2):
         result = sm.process_frame([block, peg_at(970, 400)], frame_w, frame_h, pose_corners=corners)
     check(
-        not sm.completed and result.class_status["short_peg"] is False,
+        not sm.completed and result.class_status["peg"] is False,
         "peg in the wrong hole (a3, not a1) does NOT complete the step even though the count matches",
     )
     check(
-        result.class_diagnosis["short_peg"].reason.value == "wrong_hole"
-        and result.class_diagnosis["short_peg"].detail == "a3",
-        f"diagnosis correctly reports wrong_hole with detail='a3' (got {result.class_diagnosis['short_peg']!r})",
+        result.class_diagnosis["peg"].reason.value == "wrong_hole"
+        and result.class_diagnosis["peg"].detail == "a3",
+        f"diagnosis correctly reports wrong_hole with detail='a3' (got {result.class_diagnosis['peg']!r})",
     )
 
     # -- uncertain: peg count matches but no pose corners this run at all,
@@ -366,18 +327,65 @@ def test_hole_position() -> None:
     for _ in range(window + 2):
         result = sm.process_frame([block, peg_at(730, 400)], frame_w, frame_h, pose_corners=None)
     check(
-        not sm.completed and result.class_diagnosis["short_peg"].reason.value == "uncertain",
+        not sm.completed and result.class_diagnosis["peg"].reason.value == "uncertain",
         "no pose corners available -> stays uncertain, never falsely completes on count alone",
+    )
+
+
+def test_seated_gate() -> None:
+    """Step 4's require_seated check: a PeeCee merely PRESENT in the ROI must
+    not complete the step -- it has to be seated on the blocks. Without this,
+    the PeeCee already lying beside the assembly during step 3 satisfies step
+    4's `peecee: 1` the instant step 3 ends, and seating is never tested."""
+    print("\n[6] seated gating (steps with require_seated set)")
+    base_cfg = load_config("config/default_config.yaml")
+    step4 = next(s for s in base_cfg.steps if s.require_seated)
+    cfg = single_step_config(base_cfg, step4.id)
+    frame_w, frame_h = cfg.camera.width, cfg.camera.height
+    window = cfg.resolve(cfg.steps[0], "stability_window_frames")
+
+    # blocks span x 700..1000, y 400..700
+    blocks = [
+        Detection("block_7x7", 0.95, (700, 400, 1000, 700)),
+        Detection("block_7x14", 0.95, (700, 400, 1000, 500)),
+    ]
+    # seated: centre x=850 over the blocks, base y=650 inside them, tall box
+    seated = Detection("peecee", 0.95, (820, 450, 880, 650))
+    # lying flat ON the blocks -- right place, wrong posture
+    flat = Detection("peecee", 0.95, (750, 600, 950, 660))
+    # upright but OFF to the side -- the future "face-up in step 3" case
+    beside = Detection("peecee", 0.95, (1200, 450, 1260, 650))
+
+    def run(dets):
+        sm = StepStateMachine(cfg)
+        result = None
+        for _ in range(window + 2):
+            result = sm.process_frame(dets, frame_w, frame_h)
+        return sm, result
+
+    sm, _ = run(blocks + [seated])
+    check(sm.completed, "PeeCee seated on the blocks -> step completes")
+
+    sm, result = run(blocks + [flat])
+    check(
+        not sm.completed and result.class_diagnosis["peecee"].reason.value == "not_seated",
+        "PeeCee lying flat on the blocks -> NOT complete, diagnosed not_seated",
+    )
+
+    sm, result = run(blocks + [beside])
+    check(
+        not sm.completed and result.class_diagnosis["peecee"].reason.value == "not_seated",
+        "PeeCee upright but beside the blocks -> NOT complete (the upright-but-unseated case)",
     )
 
 
 def main() -> None:
     test_full_walkthrough()
-    test_wiring_anti_gaming()
     test_escalation_tiers()
     test_diagnosis()
     test_reset()
     test_hole_position()
+    test_seated_gate()
 
     print()
     if FAILURES:

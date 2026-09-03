@@ -76,6 +76,22 @@ class StepConfig:
     # existing count/orientation gating is unaffected either way).
     target_hole: str | None = None
 
+    # Require this step's part to be SEATED on the blocks (standing on the
+    # assembly) rather than merely present in the ROI — only meaningful for
+    # step 4's peecee (see gating.evaluate_seated). False = presence/count
+    # gating only. Without it, a PeeCee lying beside the blocks during step 3
+    # already satisfies step 4's `peecee: 1` and the step completes before the
+    # trainee has seated anything.
+    require_seated: bool = False
+
+    # {class: other_class} -- each listed class must be ATTACHED to the other
+    # (see gating.evaluate_attached), not merely both present in the ROI.
+    # Same problem as require_seated, one step earlier: without it a 7x14
+    # block lying loose on the mat alongside the 7x7 already satisfies step
+    # 3's `block_7x14: 1`, so the step completes before anything is fixed
+    # together.
+    require_attached_to: dict[str, str] = field(default_factory=dict)
+
     # Per-step overrides; None means "fall back to the app/escalation default".
     confidence_threshold: float | None = None
     inference_interval_ms: int | None = None
@@ -122,6 +138,19 @@ class Config:
         ids = [s.id for s in self.steps]
         idx = ids.index(step_id)
         return ids[idx + 1] if idx + 1 < len(ids) else None
+
+    def previous_step_id(self, step_id: int | None) -> int | None:
+        """The step before `step_id`, or None if already at the first one.
+
+        `step_id` is None once the build is complete -- in that case the
+        "previous" step is the LAST one, so a trainee who finished can step
+        back into the final step to redo it.
+        """
+        ids = [s.id for s in self.steps]
+        if step_id is None:
+            return ids[-1] if ids else None
+        idx = ids.index(step_id)
+        return ids[idx - 1] if idx > 0 else None
 
     # -- per-step tunable resolution (§7/§8: step override, else app default) --
     def resolve(self, step: StepConfig, field_name: str) -> Any:
@@ -197,6 +226,8 @@ def _build_step(raw: dict, classes: set[str]) -> StepConfig:
         assembly_roi_margin_ratio=raw.get("assembly_roi_margin_ratio"),
         escalation_overrides=escalation_overrides,
         target_hole=raw.get("target_hole"),
+        require_seated=bool(raw.get("require_seated", False)),
+        require_attached_to=dict(raw.get("require_attached_to") or {}),
     )
 
 

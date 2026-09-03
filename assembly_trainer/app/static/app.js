@@ -13,6 +13,7 @@
   const main = document.querySelector("main");
   const resetBtn = document.getElementById("reset-btn");
   const resetBtnComplete = document.getElementById("reset-btn-complete");
+  const prevStepBtn = document.getElementById("prev-step-btn");
   const mockBanner = document.getElementById("mock-banner");
 
   async function resetStation(btn) {
@@ -27,6 +28,23 @@
   }
   resetBtn.addEventListener("click", () => resetStation(resetBtn));
   resetBtnComplete.addEventListener("click", () => resetStation(resetBtnComplete));
+
+  // Step back one, for a trainee who advanced by mistake or wants to redo the
+  // last action. Disabled on step 1 -- there is nowhere to go back to, and
+  // "Start again" already covers restarting.
+  async function goToPreviousStep() {
+    prevStepBtn.disabled = true;
+    const label = prevStepBtn.textContent;
+    prevStepBtn.textContent = "Going back…";
+    try {
+      await fetch("/api/previous_step", { method: "POST" });
+    } finally {
+      prevStepBtn.textContent = label;
+      // Left enabled/disabled by the next state update, which knows the step.
+      prevStepBtn.disabled = false;
+    }
+  }
+  prevStepBtn.addEventListener("click", goToPreviousStep);
 
   const TIER_RANK = { NONE: 0, REFERENCE_IMAGE: 1, REFERENCE_VIDEO: 2, TRAINER_ALERT: 3 };
 
@@ -108,12 +126,20 @@
       subStepProgress.style.display = "none";
     }
 
+    // A tier's card is shown only when the tier is reached AND its asset
+    // actually exists (the server returns null for a configured-but-missing
+    // file). Otherwise a step with no reference video renders an empty player
+    // at tier 2, which reads as a broken UI rather than "there's no video".
     const tier = TIER_RANK[state.tier] ?? 0;
-    tierImage.classList.toggle("visible", tier >= 1);
-    tierVideo.classList.toggle("visible", tier >= 2);
+    const hasImage = Boolean(state.reference_image);
+    const hasVideo = Boolean(state.reference_video);
+    tierImage.classList.toggle("visible", tier >= 1 && hasImage);
+    tierVideo.classList.toggle("visible", tier >= 2 && hasVideo);
     tierTrainer.classList.toggle("visible", tier >= 3);
-    if (tier >= 1) setAssetOrHide(tierImage, tierImageImg, state.reference_image, "image");
-    if (tier >= 2) setAssetOrHide(tierVideo, tierVideoVid, state.reference_video, "video");
+    if (tier >= 1 && hasImage) setAssetOrHide(tierImage, tierImageImg, state.reference_image, "image");
+    if (tier >= 2 && hasVideo) setAssetOrHide(tierVideo, tierVideoVid, state.reference_video, "video");
+
+    prevStepBtn.disabled = !state.can_go_back;
 
     statusBar.textContent = `elapsed on this step: ${state.elapsed_on_step}s`;
   }

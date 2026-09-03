@@ -11,3 +11,29 @@ uvicorn[standard]>=0.23
 # detector (see assembly_trainer/mock_detector.py) needs none of this.
 ultralytics>=8.1
 onnx>=1.15
+
+# ByteTrack's association step. Not pulled in by ultralytics itself: without
+# it, detector.py's model.track(tracker="bytetrack.yaml") triggers an
+# ultralytics AutoUpdate that pip-installs lap mid-run, which stalls the
+# server's inference thread on first start (state sticks at "starting").
+lap>=0.5.12
+
+# ---------------------------------------------------------------------------
+# GPU (CUDA) — remove this block on a CPU-only machine, which then gets the
+# default CPU torch from PyPI and runs ONNX on CPUExecutionProvider.
+#
+# The three pins below are one unit: onnxruntime-gpu 1.29 links against
+# CUDA 13 (cublasLt64_13.dll), so torch must be the cu130 build or the CUDA
+# provider fails to load and SILENTLY falls back to CPU. The cu128 build
+# ships cublasLt64_12.dll and does not satisfy it.
+#
+# onnxruntime carries no CUDA DLLs of its own here — it finds them on the
+# DLL search path that `import torch` adds. Anything importing onnxruntime
+# without importing torch first will quietly get CPUExecutionProvider.
+# (Not an issue for the app: ultralytics always imports torch.)
+#
+# Requires an NVIDIA driver supporting CUDA 13.x.
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.13.0+cu130
+torchvision==0.28.0+cu130
+onnxruntime-gpu>=1.29

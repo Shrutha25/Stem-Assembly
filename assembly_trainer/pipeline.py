@@ -72,6 +72,18 @@ class Pipeline:
         self.flags.clear()
         self.last_result = None
 
+    def go_to_previous_step(self) -> bool:
+        """Step back one. Restarts the escalation timer so the trainee gets a
+        full grace period on the step they returned to rather than inheriting
+        the elapsed time that had already escalated. Past trainer flags are
+        kept -- unlike reset(), this isn't a new attempt, and a trainer should
+        still see that help was requested earlier in this one."""
+        if not self.state_machine.go_to_previous_step():
+            return False
+        self.escalation.on_step_started()
+        self.last_result = None
+        return True
+
     def step(self) -> PipelineResult | None:
         frame = self.frame_source()
         if frame is None:

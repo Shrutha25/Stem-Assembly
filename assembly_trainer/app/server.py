@@ -96,11 +96,23 @@ def _annotate(frame: np.ndarray, result: PipelineResult, detections, is_mock: bo
 _DIAGNOSIS_MESSAGES = {
     "satisfied": None,
     "not_present": "not detected yet",
+    "not_seated": "not seated yet — sit it upright on the block",
     "uncertain": "not sure yet — hold steady / move closer",
     "wrong_orientation": "wrong orientation — flip/rotate it",
     "wrong_part": "wrong part detected here",
     "wrong_hole": "wrong hole — move it to the correct hole",
 }
+
+
+def _parse_count_detail(detail: str | None) -> tuple[int, int] | None:
+    """`detail` is "found/required" for the count-based diagnoses."""
+    if not detail or "/" not in detail:
+        return None
+    found, _, required = detail.partition("/")
+    try:
+        return int(found), int(required)
+    except ValueError:
+        return None
 
 
 def _diagnosis_message(diag) -> str | None:
@@ -109,6 +121,17 @@ def _diagnosis_message(diag) -> str | None:
         return f"wrong part detected here ({diag.detail.replace('_', ' ')})"
     if diag.reason.value == "wrong_hole" and diag.detail:
         return f"wrong hole — currently in {diag.detail.replace('_', ' ')}, move it to the correct hole"
+    # Count-gated steps: say how far along the count is rather than a flat
+    # "not detected yet" while several are plainly detected on screen.
+    counts = _parse_count_detail(diag.detail)
+    if counts and diag.reason.value in ("not_present", "uncertain"):
+        found, required = counts
+        if required > 1 and found > 0:
+            missing = required - found
+            if diag.reason.value == "uncertain":
+                return f"{found} of {required} detected — hold steady / move closer"
+            noun = "one" if missing == 1 else f"{missing}"
+            return f"{found} of {required} detected — add {noun} more"
     return base
 
 
@@ -130,6 +153,9 @@ def _state_dict(cfg: Config, result: PipelineResult, is_mock: bool) -> dict:
         },
         "sub_step_progress": list(fr.sub_step_progress) if fr.sub_step_progress else None,
         "waiting_for_reset": fr.waiting_for_reset,
+        # False on the first step (nowhere to go back to). True once complete,
+        # so a finished trainee can step back into the last step to redo it.
+        "can_go_back": cfg.previous_step_id(fr.step_id) is not None,
         "tier": result.tier.name,
         "elapsed_on_step": round(result.elapsed_on_step, 1),
         "reference_image": _step_asset(cfg, fr.step_id, "reference_image"),
@@ -138,11 +164,23 @@ def _state_dict(cfg: Config, result: PipelineResult, is_mock: bool) -> dict:
 
 
 def _step_asset(cfg: Config, step_id: int | None, field: str) -> str | None:
+    """URL for a step's reference image/video, or None.
+
+    None when the step doesn't configure one AND when the configured file
+    isn't actually on disk -- otherwise the UI advertises an asset it can't
+    load and renders an empty <img>/<video> placeholder. Steps are configured
+    with reference_video paths that don't exist yet, so without the existence
+    check the escalation panel shows a broken player at tier 2.
+    """
     if step_id is None:
         return None
     step = cfg.get_step(step_id)
     value = getattr(step, field)
-    return f"/assets/{Path(value).relative_to('assets').as_posix()}" if value else None
+    if not value:
+        return None
+    if not (REPO_ROOT / value).exists():
+        return None
+    return f"/assets/{Path(value).relative_to('assets').as_posix()}"
 
 
 def build_detector(cfg: Config, args: argparse.Namespace, frame_w: int, frame_h: int) -> tuple[Detector, bool]:
@@ -192,6 +230,8 @@ def make_app(args: argparse.Namespace) -> FastAPI:
     camera: ThreadedCamera | None = None
     frame_w, frame_h = cfg.camera.width, cfg.camera.height
     if not args.no_camera:
+        if args.camera_index is not None:
+            cfg.camera.device_index = args.camera_index
         camera = ThreadedCamera(cfg.camera).start()
         frame_w, frame_h = camera.actual_resolution
         print(f"[server] camera started at {frame_w}x{frame_h}")
@@ -266,6 +306,14 @@ def make_app(args: argparse.Namespace) -> FastAPI:
             pipeline.reset()
         return JSONResponse({"status": "ok"})
 
+    @app.post("/api/previous_step")
+    def api_previous_step():
+        """Step back one. `moved` is False when already on the first step, so
+        the UI can leave the control disabled rather than silently no-op."""
+        with pipeline_lock:
+            moved = pipeline.go_to_previous_step()
+        return JSONResponse({"status": "ok", "moved": moved})
+
     @app.get("/video_feed")
     def video_feed():
         def gen():
@@ -298,6 +346,8 @@ def main() -> None:
     parser.add_argument("--device", default=None, help="torch device for the real detector, e.g. 'cpu' or '0'")
     parser.add_argument("--mock", action="store_true", help="use the scripted MockDetector instead of a real model")
     parser.add_argument("--mock-hold-seconds", type=float, default=6.0)
+    parser.add_argument("--camera-index", type=int, default=None,
+                        help="override config's camera.device_index (e.g. 0 when the external cam is unplugged)")
     parser.add_argument("--no-camera", action="store_true", help="skip opening a real camera (implies visible frames are placeholders)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)

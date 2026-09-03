@@ -1,0 +1,106 @@
+# ARCHIVED STEP DEFINITIONS — reference only, NOT loaded by anything.
+#
+# config.py reads only config/default_config.yaml. Nothing parses this file;
+# it exists so the previous step 3/4/5 definitions aren't lost while new
+# steps 3 and 4 are designed. To bring one back, copy the block into
+# default_config.yaml's `steps:` list and re-add any classes it needs to the
+# `classes:` list (see the per-step notes below).
+#
+# Archived 2026-08-26, at the point where:
+#   - the build became FOUR steps (step 4 is the end)
+#   - the PeeCee started arriving pre-wired to the motors
+#   - `motor_lead_connected` was removed from `classes` and from the labels
+#
+# Class list these steps were written against:
+#   peg, block_7x7, block_7x14, peecee, motor_lead_connected
+# Current class list:
+#   peg, block_7x7, block_7x14, peecee
+
+
+# --- step 3 (as it stood) ------------------------------------------------
+# Still live in default_config.yaml, unchanged. Archived here as the
+# baseline to diff the new step 3 against.
+#
+# Note the `requires`: no peg. Placing the 7x14 block on top physically
+# occludes both pegs -- of training images showing the 7x14 block, only 7%
+# have a labelable peg, and at step 4 it is 0%. Requiring pegs here was
+# unsatisfiable by any detector.
+archived_step_3:
+  id: 3
+  name: "Place the 7x14 block on top of the 7x7 block"
+  requires: {block_7x7: 1, block_7x14: 1}
+  reference_image: assets/reference/step_03_correct.jpg
+  reference_video: assets/reference/step_03_correct.mp4
+
+
+# --- step 4 (as it stood) ------------------------------------------------
+# Still live in default_config.yaml, unchanged, and currently the FINAL
+# step. Archived as the baseline for the new step 4.
+#
+# The `peecee` this was trained against was BARE. With the PeeCee now
+# arriving wired, its appearance changed enough that live confidence fell to
+# 0.237 (vs the 0.60 threshold) -- which is why steps 3/4 need recapturing
+# with the wired part, not just re-tuning.
+archived_step_4:
+  id: 4
+  name: "Seat the PeeCee between pegs and the 7x14 block edge"
+  requires: {block_7x7: 1, block_7x14: 1, peecee: 1}
+  reference_image: assets/reference/step_04_correct.jpg
+  reference_video: assets/reference/step_04_correct.mp4
+
+
+# --- step 5 (REMOVED from the live config) -------------------------------
+# The motor-wiring step, build plan §5. Removed because the PeeCee now
+# arrives already wired, so no trainee action involves the leads.
+#
+# TWO THINGS TO KNOW BEFORE REINSTATING THIS:
+#
+# 1. It requires the `motor_lead_connected` class, which is no longer in
+#    `classes` and whose 81 boxes were deleted from dataset/labels/ (backup:
+#    dataset/labels.backup-prestep5/). It was the weakest class in the model
+#    by a wide margin -- 81 instances vs peg's 1372, and ZERO live detections
+#    even at confidence 0.05. Reinstating means recapturing and relabeling it.
+#
+# 2. As written it is UNSATISFIABLE, independently of detector quality.
+#    `require_roi_empty_first: true` on lead_2 makes it wait for the
+#    connector zone to read EMPTY of connected leads before confirming -- but
+#    lead 1 stays plugged in, so the zone never empties and the step can only
+#    pass on detector flicker. The anti-double-count intent is right; the
+#    mechanism is wrong.
+#
+#    FIX IF REINSTATED: gate on COUNT, not on a reset -- lead 1 confirms at
+#    count >= 1, lead 2 at count >= 2, exactly how steps 1/2 count pegs. Two
+#    connected leads are two detections, so one detection cannot satisfy a
+#    requirement of two and double-counting becomes structurally impossible.
+#    Drop `require_roi_empty_first` and the `sequential_roi` reset branch in
+#    state_machine.py along with it.
+#
+#    Also re-measure `confidence_threshold`. The 0.75 below was set as
+#    "stricter" when a competing `motor_lead_loose` class existed. That class
+#    is long gone, so 0.75 is now just a high bar on a weak class.
+#
+# The `sequential_roi` machinery in state_machine.py, roi.connector_zone_roi,
+# and the mock_detector wiring branch are all still present and dormant --
+# mock_detector guards on `wiring_step is not None`, so it no-ops. The smoke
+# test's `test_wiring_anti_gaming` WAS deleted and would need rewriting.
+archived_step_5:
+  id: 5
+  name: "Wire both motor wire into the PeeCee"
+  type: sequential_roi
+  requires: {block_7x7: 1, block_7x14: 1, peecee: 1, motor_lead_connected: 2}
+  roi: peecee_connector_zone
+  confidence_threshold: 0.75
+  stability_window_frames: 15
+  escalation:
+    tier_1_reference_image_after_seconds: 30
+    tier_2_reference_video_after_seconds: 60
+    tier_3_trainer_alert_after_seconds: 120
+  sub_steps:
+    - key: lead_1
+      ui_prompt: "Wire first motor lead into the PeeCee"
+      require_roi_empty_first: false
+    - key: lead_2
+      ui_prompt: "Wire second motor lead into the PeeCee"
+      require_roi_empty_first: true
+  reference_image: assets/reference/step_05_correct.jpg
+  reference_video: assets/reference/step_05_correct.mp4

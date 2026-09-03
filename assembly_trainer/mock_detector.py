@@ -57,7 +57,10 @@ def _at(class_name: str, x: float, y: float, w: float = 24, h: float | None = No
 # on the plate from step 1, already covers every later step's new-part
 # positions without needing a real fixture layout.
 _CLASS_OFFSETS: dict[str, tuple[float, float]] = {
-    "short_peg": (20, 20),
+    # `peg` is the merged short_peg/long_peg class; steps 1/2 require a COUNT
+    # of it (3 and 4 -- 2 block fixture pegs plus what the trainee placed),
+    # so the walkthrough lays out that many peg detections side by side.
+    "peg": (20, 20),
     "block_7x14": (20, 100),
     "peecee": (20, 160),
 }
@@ -79,7 +82,15 @@ def _layout_step_detections(requires: dict[str, int], cx: float, cy: float) -> l
         if class_name == "block_7x14":
             detections.append(_at(class_name, cx + base_x, cy + base_y, w=250, h=30))
         elif class_name == "peecee":
-            detections.append(_at(class_name, cx + base_x, cy + base_y, w=60, h=40))
+            # Must be SEATED-shaped, not just present: step 4 sets
+            # require_seated, so gating.evaluate_seated demands a box that is
+            # taller than _SEATED_MIN_ASPECT, horizontally centred over the
+            # blocks, and whose base falls inside their vertical span. The
+            # block_7x7 envelope above spans (cx-10, cy-10)-(cx+330, cy+250),
+            # so this box (centre cx+50, base cy+240, aspect 80/60 = 1.33)
+            # satisfies all three. A wide, flat box here reads as "lying
+            # beside the assembly" and the walkthrough never completes.
+            detections.append(_at(class_name, cx + base_x, cy + base_y, w=60, h=80))
         else:
             for i in range(count):
                 detections.append(_at(class_name, cx + base_x + i * _ITEM_SPACING, cy + base_y))

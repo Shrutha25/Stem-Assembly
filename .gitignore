@@ -13,10 +13,11 @@ data/dataset_pose/
 models/*
 !models/.gitkeep
 !models/runs/.gitkeep
-
 *.pt
 *.onnx
-
+/data/sessions_excluded/
+/runs/
+/dataset/
 # zip bundles / manual snapshot copies made for offline training runs
 *.zip
 step 1, 2 removed/
